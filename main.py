@@ -1,21 +1,30 @@
+import logging
+import os
 import pickle
-import shap
+
 import numpy as np
-from fastapi import FastAPI
-from pydantic import BaseModel
 import pandas as pd
+import shap
 import time
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
-with open("xg_model.pkl", "rb") as f:
-    model = pickle.load(f)
+logger = logging.getLogger(__name__)
 
-with open('x_columns.pkl', 'rb') as f:
-    x_columns = pickle.load(f)
+MODEL_DIR = os.getenv("MODEL_DIR", ".")
 
-background = pd.read_parquet("shap_background.parquet")
 
-# explainer = shap.KernelExplainer(predict_proba_wrapper, background)
-explainer = shap.TreeExplainer(model, feature_perturbation="tree_path_dependent")
+def _load_artifacts(model_dir: str):
+    with open(os.path.join(model_dir, "xg_model.pkl"), "rb") as f:
+        _model = pickle.load(f)
+    with open(os.path.join(model_dir, "x_columns.pkl"), "rb") as f:
+        _x_columns = pickle.load(f)
+    _background = pd.read_parquet(os.path.join(model_dir, "shap_background.parquet"))
+    _explainer = shap.TreeExplainer(_model, feature_perturbation="tree_path_dependent")
+    return _model, _x_columns, _background, _explainer
+
+
+model, x_columns, background, explainer = _load_artifacts(MODEL_DIR)
 
 app = FastAPI()
 
@@ -53,3 +62,21 @@ def predict(req: PredictRequest):
         "explanation": explanation_dict_sorted,
         "elapsed_time_seconds": round(elapsed_time, 4)
     }
+
+
+@app.post("/reload")
+def reload_model():
+    """Hot-reload model artifacts from disk (called by MLOps after promotion)."""
+    global model, x_columns, background, explainer
+    try:
+        model, x_columns, background, explainer = _load_artifacts(MODEL_DIR)
+        logger.info("Model reloaded successfully from %s", MODEL_DIR)
+        return {"status": "ok", "message": "Model reloaded"}
+    except Exception as e:
+        logger.error("Model reload failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Reload failed: {e}")
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "model_loaded": model is not None}
