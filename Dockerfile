@@ -17,16 +17,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the entire application
 COPY . .
 
-# Expose ports
-# 5000: FastAPI REST API
-# 50051: gRPC server
-EXPOSE 5000 50051
+# Optional REST API port when running `uvicorn main:app`.
+EXPOSE 5000
 
 ENV MODEL_DIR=/app
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:5000/docs')" || exit 1
-
-# Default to FastAPI server, can be overridden with docker-compose command
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "5000"]
+# Default runtime matches diabetify-be integration via RabbitMQ.
+CMD ["python", "main_mq.py"]

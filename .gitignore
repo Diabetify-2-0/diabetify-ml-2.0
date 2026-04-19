@@ -1,1 +1,24 @@
-.venv
+# Local environment
+.env
+.env.local
+.env.*.local
+.venv/
+venv/
+env/
+
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Quality tool cache/output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local editor/cache files
+.idea/
+.vscode/
+*.log
