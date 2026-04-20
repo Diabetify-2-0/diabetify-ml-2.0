@@ -35,7 +35,19 @@ python -m py_compile prediction_core.py main.py main_mq.py
 ```
 
 ## Docker
+The compose file is self-contained for local ML development. It starts a local
+RabbitMQ broker for `diabetify-ml-worker`, so the worker can resolve
+`rabbitmq:5672` inside the compose network.
+
 ```powershell
 docker compose up --build diabetify-ml-worker
-docker compose --profile api up --build
+docker compose --profile api up --build diabetify-ml-api
 ```
+
+RabbitMQ management UI is available at `http://localhost:15672` with
+`admin` / `password123` by default.
+
+If the backend compose is already running its own RabbitMQ on the same host
+ports, stop one of the brokers before using this standalone compose file. For
+full-stack runs, use a single shared broker from the backend or a top-level
+compose file instead of starting two RabbitMQ containers.

@@ -1,4 +1,23 @@
 services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: diabetify-ml-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-password123}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
   diabetify-ml-worker:
     build:
       context: .
@@ -7,9 +26,12 @@ services:
     restart: unless-stopped
     environment:
       MODEL_DIR: /app
-      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://admin:password123@rabbitmq:5672/}
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-admin}:${RABBITMQ_PASSWORD:-password123}@rabbitmq:5672/
       PYTHONUNBUFFERED: "1"
     command: ["python", "main_mq.py"]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
   diabetify-ml-api:
     profiles: ["api"]
@@ -36,3 +58,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+volumes:
+  rabbitmq_data:
