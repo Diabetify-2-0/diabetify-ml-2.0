@@ -1,13 +1,13 @@
 import logging
+import os
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-from prediction_core import DEFAULT_MODEL_DIR, PredictionService
+from shared import prediction_service
 
 logger = logging.getLogger(__name__)
 
-prediction_service = PredictionService(DEFAULT_MODEL_DIR)
 app = FastAPI()
 
 
@@ -27,7 +27,10 @@ def predict(req: PredictRequest) -> dict:
 
 
 @app.post("/reload")
-def reload_model() -> dict:
+def reload_model(x_reload_secret: str = Header(default="")) -> dict:
+    expected = os.getenv("RELOAD_SECRET", "")
+    if not expected or x_reload_secret != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         prediction_service.reload()
         logger.info("Model reloaded successfully from %s", DEFAULT_MODEL_DIR)

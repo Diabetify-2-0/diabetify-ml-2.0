@@ -14,7 +14,7 @@ from typing import Any
 import pika
 from pika.exceptions import AMQPConnectionError
 
-from prediction_core import DEFAULT_MODEL_DIR, PredictionService
+from shared import prediction_service
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ RABBITMQ_RETRY_DELAY = int(os.getenv("RABBITMQ_RETRY_DELAY", "5"))
 
 class AsyncMLService:
     def __init__(self) -> None:
-        self.prediction_service = PredictionService(DEFAULT_MODEL_DIR)
+        self.prediction_service = prediction_service
         self.is_running = threading.Event()
 
         self.rabbit_connection: pika.BlockingConnection | None = None

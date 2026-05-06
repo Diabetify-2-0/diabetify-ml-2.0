@@ -22,7 +22,14 @@ class PredictionService:
         self.model: Any | None = None
         self.x_columns: list[str] = []
         self.explainer: Any | None = None
-        self.reload()
+        try:
+            self.reload()
+        except FileNotFoundError:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Model files not found at %s — service unhealthy until /reload is called",
+                self.model_dir,
+            )
 
     def reload(self) -> None:
         with open(os.path.join(self.model_dir, "xg_model.pkl"), "rb") as f:
