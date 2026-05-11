@@ -8,7 +8,15 @@ from shared import prediction_service
 
 logger = logging.getLogger(__name__)
 
+_RELOAD_SECRET = os.getenv("RELOAD_SECRET", "")
+
 app = FastAPI()
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    if not _RELOAD_SECRET:
+        logger.warning("RELOAD_SECRET is not set — /reload endpoint will reject all calls")
 
 
 class PredictRequest(BaseModel):
@@ -28,8 +36,7 @@ def predict(req: PredictRequest) -> dict:
 
 @app.post("/reload")
 def reload_model(x_reload_secret: str = Header(default="")) -> dict:
-    expected = os.getenv("RELOAD_SECRET", "")
-    if not expected or x_reload_secret != expected:
+    if not _RELOAD_SECRET or x_reload_secret != _RELOAD_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         prediction_service.reload()
