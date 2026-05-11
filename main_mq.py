@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 RABBITMQ_URL = os.getenv("RABBITMQ_URL", "amqp://admin:password123@localhost:5672/")
 MAX_RABBITMQ_RETRIES = int(os.getenv("MAX_RABBITMQ_RETRIES", "5"))
 RABBITMQ_RETRY_DELAY = int(os.getenv("RABBITMQ_RETRY_DELAY", "5"))
+PREDICTION_REQUEST_QUEUE = os.getenv("PREDICTION_REQUEST_QUEUE", "ml.prediction.request")
+PREDICTION_RESPONSE_QUEUE = os.getenv("PREDICTION_RESPONSE_QUEUE", "ml.prediction.response")
+LEGACY_PREDICTION_RESPONSE_QUEUE = os.getenv(
+    "LEGACY_PREDICTION_RESPONSE_QUEUE",
+    "ml.prediction.hybrid_response",
+)
+HEALTH_REQUEST_QUEUE = os.getenv("HEALTH_REQUEST_QUEUE", "ml.health.request")
+HEALTH_RESPONSE_QUEUE = os.getenv("HEALTH_RESPONSE_QUEUE", "ml.health.response")
 
 
 class AsyncMLService:
@@ -33,10 +41,11 @@ class AsyncMLService:
         self.rabbit_channel: pika.channel.Channel | None = None
         self.rabbit_consumer_thread: threading.Thread | None = None
 
-        self.prediction_request_queue = "ml.prediction.request"
-        self.health_request_queue = "ml.health.request"
-        self.prediction_response_queue = "ml.prediction.hybrid_response"
-        self.health_response_queue = "ml.health.response"
+        self.prediction_request_queue = PREDICTION_REQUEST_QUEUE
+        self.health_request_queue = HEALTH_REQUEST_QUEUE
+        self.prediction_response_queue = PREDICTION_RESPONSE_QUEUE
+        self.legacy_prediction_response_queue = LEGACY_PREDICTION_RESPONSE_QUEUE
+        self.health_response_queue = HEALTH_RESPONSE_QUEUE
 
         self.messages_received = 0
         self.messages_processed = 0
@@ -67,12 +76,10 @@ class AsyncMLService:
             return
 
         self.is_running.clear()
-        if self.rabbit_channel and self.rabbit_channel.is_open:
-            self.rabbit_channel.stop_consuming()
-        if self.rabbit_connection and self.rabbit_connection.is_open:
-            self.rabbit_connection.close()
+        self._stop_consuming_threadsafe()
         if self.rabbit_consumer_thread and self.rabbit_consumer_thread.is_alive():
             self.rabbit_consumer_thread.join(timeout=5)
+        self._close_rabbitmq_resources()
         logger.info("ML RabbitMQ worker stopped")
 
     def _setup_rabbitmq(self) -> bool:
@@ -95,26 +102,38 @@ class AsyncMLService:
         return False
 
     def _queues(self) -> list[str]:
-        return [
+        queues = [
             self.prediction_request_queue,
-            "ml.prediction.response",
             self.prediction_response_queue,
             self.health_request_queue,
             self.health_response_queue,
         ]
+        if self.legacy_prediction_response_queue != self.prediction_response_queue:
+            queues.append(self.legacy_prediction_response_queue)
+        return queues
 
     def _start_consuming(self) -> None:
         assert self.rabbit_channel is not None
         self.rabbit_channel.basic_consume(
             queue=self.prediction_request_queue,
             on_message_callback=lambda ch, method, props, body: self._handle_message(
-                ch, method, props, body, self._process_prediction_request
+                ch,
+                method,
+                props,
+                body,
+                self._process_prediction_request,
+                self.prediction_response_queue,
             ),
         )
         self.rabbit_channel.basic_consume(
             queue=self.health_request_queue,
             on_message_callback=lambda ch, method, props, body: self._handle_message(
-                ch, method, props, body, self._process_health_request
+                ch,
+                method,
+                props,
+                body,
+                self._process_health_request,
+                self.health_response_queue,
             ),
         )
 
@@ -123,6 +142,8 @@ class AsyncMLService:
         except Exception as err:
             if self.is_running.is_set():
                 logger.exception("RabbitMQ consumer stopped unexpectedly: %s", err)
+        finally:
+            self._close_rabbitmq_resources()
 
     def _handle_message(
         self,
@@ -131,15 +152,11 @@ class AsyncMLService:
         properties: pika.BasicProperties,
         body: bytes,
         handler: Callable[[dict[str, Any]], dict[str, Any]],
+        fallback_reply_to_queue: str,
     ) -> None:
         correlation_id = properties.correlation_id
-        reply_to_queue = properties.reply_to
+        reply_to_queue = properties.reply_to or fallback_reply_to_queue
         self.messages_received += 1
-
-        if not reply_to_queue:
-            self.messages_failed += 1
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-            return
 
         try:
             request_data = json.loads(body.decode("utf-8"))
@@ -163,6 +180,29 @@ class AsyncMLService:
             except Exception:
                 logger.exception("Failed to publish ML error response")
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+    def _stop_consuming_threadsafe(self) -> None:
+        if not self.rabbit_connection or not self.rabbit_connection.is_open:
+            return
+        if not self.rabbit_channel or not self.rabbit_channel.is_open:
+            return
+
+        try:
+            self.rabbit_connection.add_callback_threadsafe(self.rabbit_channel.stop_consuming)
+        except Exception:
+            logger.exception("Failed to request RabbitMQ consumer shutdown")
+
+    def _close_rabbitmq_resources(self) -> None:
+        if self.rabbit_channel and self.rabbit_channel.is_open:
+            try:
+                self.rabbit_channel.close()
+            except Exception:
+                logger.exception("Failed to close RabbitMQ channel cleanly")
+        if self.rabbit_connection and self.rabbit_connection.is_open:
+            try:
+                self.rabbit_connection.close()
+            except Exception:
+                logger.exception("Failed to close RabbitMQ connection cleanly")
 
     def _publish(
         self,

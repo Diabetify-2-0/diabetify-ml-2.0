@@ -5,7 +5,8 @@ ML prediction service for Diabetify.
 ## Runtime
 The primary runtime is the RabbitMQ worker in `main_mq.py`.
 It consumes `ml.prediction.request` and publishes responses to the queue requested by
-the backend, normally `ml.prediction.hybrid_response`.
+the backend via `reply_to`, normally `ml.prediction.response`.
+The legacy queue `ml.prediction.hybrid_response` is still declared for compatibility.
 
 `main.py` is kept as an optional FastAPI API for local/manual prediction, health checks,
 and model reload.
@@ -31,7 +32,7 @@ uvicorn main:app --reload
 ## Quality Checks
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE = "1"
-python -m py_compile prediction_core.py main.py main_mq.py
+python -m py_compile prediction_core.py main.py main_mq.py main_combined.py shared.py
 ```
 
 ## Docker
@@ -40,8 +41,7 @@ RabbitMQ broker for `diabetify-ml-worker`, so the worker can resolve
 `rabbitmq:5672` inside the compose network.
 
 ```powershell
-docker compose up --build diabetify-ml-worker
-docker compose --profile api up --build diabetify-ml-api
+docker compose up --build diabetify-ml
 ```
 
 RabbitMQ management UI is available at `http://localhost:15673` with

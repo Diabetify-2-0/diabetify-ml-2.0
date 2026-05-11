@@ -33,7 +33,7 @@ def reload_model(x_reload_secret: str = Header(default="")) -> dict:
         raise HTTPException(status_code=401, detail="Unauthorized")
     try:
         prediction_service.reload()
-        logger.info("Model reloaded successfully from %s", DEFAULT_MODEL_DIR)
+        logger.info("Model reloaded successfully from %s", prediction_service.model_dir)
         return {"status": "ok", "message": "Model reloaded"}
     except Exception as err:
         logger.exception("Model reload failed")
