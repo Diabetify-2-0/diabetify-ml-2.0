@@ -44,7 +44,7 @@ docker compose up --build diabetify-ml-worker
 docker compose --profile api up --build diabetify-ml-api
 ```
 
-RabbitMQ management UI is available at `http://localhost:15672` with
+RabbitMQ management UI is available at `http://localhost:15673` with
 `admin` / `password123` by default.
 
 If the backend compose is already running its own RabbitMQ on the same host
