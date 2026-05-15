@@ -6,16 +6,14 @@ services:
     container_name: diabetify-ml
     restart: unless-stopped
     environment:
-      MODEL_DIR: /app/models
-      # RabbitMQ dari diabetify-be-2.0 (exposed di host port 5672)
+      # Local Docker runtime uses the model artifacts bundled in the image.
+      MODEL_DIR: /app
+      # Reuse RabbitMQ from diabetify-be (exposed on host port 5672).
       RABBITMQ_URL: amqp://${RABBITMQ_USER:-admin}:${RABBITMQ_PASSWORD:-password123}@host.docker.internal:5672/
       RELOAD_SECRET: ${RELOAD_SECRET:-diabetify-reload-dev-secret}
       PYTHONUNBUFFERED: "1"
     ports:
       - "${ML_REST_PORT:-5000}:5000"
-    volumes:
-      # Volume shared dengan diabetify-mlops untuk model yang sudah dipromote
-      - diabetify_models_live:/app/models
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -30,7 +28,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
-volumes:
-  diabetify_models_live:
-    external: true

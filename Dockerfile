@@ -15,8 +15,8 @@ COPY . .
 # REST API port
 EXPOSE 5000
 
-# MODEL_DIR is overridden at runtime to point at the shared volume
-ENV MODEL_DIR=/app/models
+# The bundled image includes xg_model.pkl and x_columns.pkl in /app.
+ENV MODEL_DIR=/app
 
 # Runs REST API (port 5000) + RabbitMQ worker in one process sharing one PredictionService
 CMD ["python", "main_combined.py"]

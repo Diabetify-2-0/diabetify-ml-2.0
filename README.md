@@ -33,21 +33,23 @@ uvicorn main:app --reload
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE = "1"
 python -m py_compile prediction_core.py main.py main_mq.py main_combined.py shared.py
+python -m unittest discover -s tests
 ```
 
 ## Docker
-The compose file is self-contained for local ML development. It starts a local
-RabbitMQ broker for `diabetify-ml-worker`, so the worker can resolve
-`rabbitmq:5672` inside the compose network.
+The compose file reuses RabbitMQ from `diabetify-be` through host port `5672`.
+It does not start its own broker.
 
 ```powershell
-docker compose up --build diabetify-ml
+docker compose up --build -d diabetify-ml
 ```
 
-RabbitMQ management UI is available at `http://localhost:15673` with
-`admin` / `password123` by default.
+The container also exposes the optional REST API on `http://localhost:5000`.
+RabbitMQ management UI still comes from the backend stack at
+`http://localhost:25672` with `admin` / `password123` by default.
 
-If the backend compose is already running its own RabbitMQ on the same host
-ports, stop one of the brokers before using this standalone compose file. For
-full-stack runs, use a single shared broker from the backend or a top-level
-compose file instead of starting two RabbitMQ containers.
+`GET /health` now returns HTTP `503` whenever the model is not loaded or,
+for the combined runtime, when the RabbitMQ worker is disconnected.
+
+For full-stack local runs, start `diabetify-be` first so RabbitMQ is already
+available on the host before the ML container boots.

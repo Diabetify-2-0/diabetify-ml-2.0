@@ -11,6 +11,7 @@ import uvicorn
 
 from main import app
 from main_mq import AsyncMLService
+from shared import runtime_status
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ def run_rest() -> None:
 
 
 def main() -> None:
+    runtime_status.set_require_rabbitmq(True)
     mq_service = AsyncMLService()
 
     def handle_signal(signum, frame):

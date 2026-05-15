@@ -12,9 +12,8 @@ from collections.abc import Callable
 from typing import Any
 
 import pika
-from pika.exceptions import AMQPConnectionError
 
-from shared import prediction_service
+from shared import prediction_service, runtime_status
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -36,6 +35,7 @@ class AsyncMLService:
     def __init__(self) -> None:
         self.prediction_service = prediction_service
         self.is_running = threading.Event()
+        self._state_lock = threading.Lock()
 
         self.rabbit_connection: pika.BlockingConnection | None = None
         self.rabbit_channel: pika.channel.Channel | None = None
@@ -50,15 +50,14 @@ class AsyncMLService:
         self.messages_received = 0
         self.messages_processed = 0
         self.messages_failed = 0
+        self.last_consumer_error: str | None = None
+        self.last_consumer_error_at: str | None = None
+        self._publish_health(False, note="worker initialized")
 
     def start(self) -> None:
         self.is_running.set()
-        if not self._setup_rabbitmq():
-            logger.error("RabbitMQ setup failed after %s attempts", MAX_RABBITMQ_RETRIES)
-            sys.exit(1)
-
         self.rabbit_consumer_thread = threading.Thread(
-            target=self._start_consuming,
+            target=self._run_consumer_loop,
             name="RabbitMQConsumer",
             daemon=True,
         )
@@ -67,6 +66,10 @@ class AsyncMLService:
 
         try:
             while self.is_running.is_set():
+                if self.rabbit_consumer_thread and not self.rabbit_consumer_thread.is_alive():
+                    logger.error("RabbitMQ consumer thread exited unexpectedly")
+                    self._publish_health(False, note="consumer thread exited unexpectedly")
+                    sys.exit(1)
                 time.sleep(1)
         except KeyboardInterrupt:
             self.stop()
@@ -80,6 +83,7 @@ class AsyncMLService:
         if self.rabbit_consumer_thread and self.rabbit_consumer_thread.is_alive():
             self.rabbit_consumer_thread.join(timeout=5)
         self._close_rabbitmq_resources()
+        self._publish_health(False, note="worker stopped")
         logger.info("ML RabbitMQ worker stopped")
 
     def _setup_rabbitmq(self) -> bool:
@@ -90,8 +94,11 @@ class AsyncMLService:
                 for queue in self._queues():
                     self.rabbit_channel.queue_declare(queue=queue, durable=True)
                 self.rabbit_channel.basic_qos(prefetch_count=1)
+                self._clear_consumer_error()
+                self._publish_health(True, note="connected to rabbitmq")
                 return True
-            except AMQPConnectionError as err:
+            except Exception as err:
+                self._record_consumer_error(f"RabbitMQ connection failed: {err}")
                 logger.warning(
                     "RabbitMQ connection attempt %s/%s failed: %s",
                     attempt,
@@ -112,7 +119,40 @@ class AsyncMLService:
             queues.append(self.legacy_prediction_response_queue)
         return queues
 
-    def _start_consuming(self) -> None:
+    def _run_consumer_loop(self) -> None:
+        while self.is_running.is_set():
+            if not self._setup_rabbitmq():
+                if not self.is_running.is_set():
+                    break
+                logger.error(
+                    "RabbitMQ setup failed after %s attempts; retrying in %s seconds",
+                    MAX_RABBITMQ_RETRIES,
+                    RABBITMQ_RETRY_DELAY,
+                )
+                self._publish_health(False, note="retrying rabbitmq setup")
+                time.sleep(RABBITMQ_RETRY_DELAY)
+                continue
+
+            try:
+                self._configure_consumers()
+                assert self.rabbit_channel is not None
+                logger.info("RabbitMQ consumer connected and consuming")
+                self.rabbit_channel.start_consuming()
+                if self.is_running.is_set():
+                    self._record_consumer_error("RabbitMQ consuming stopped unexpectedly")
+                    logger.error("RabbitMQ consuming stopped unexpectedly; reconnecting")
+            except Exception as err:
+                if self.is_running.is_set():
+                    self._record_consumer_error(f"RabbitMQ consumer error: {err}")
+                    logger.exception("RabbitMQ consumer stopped unexpectedly: %s", err)
+            finally:
+                self._close_rabbitmq_resources()
+
+            if self.is_running.is_set():
+                self._publish_health(False, note="reconnecting to rabbitmq")
+                time.sleep(RABBITMQ_RETRY_DELAY)
+
+    def _configure_consumers(self) -> None:
         assert self.rabbit_channel is not None
         self.rabbit_channel.basic_consume(
             queue=self.prediction_request_queue,
@@ -137,14 +177,6 @@ class AsyncMLService:
             ),
         )
 
-        try:
-            self.rabbit_channel.start_consuming()
-        except Exception as err:
-            if self.is_running.is_set():
-                logger.exception("RabbitMQ consumer stopped unexpectedly: %s", err)
-        finally:
-            self._close_rabbitmq_resources()
-
     def _handle_message(
         self,
         ch: pika.channel.Channel,
@@ -168,6 +200,7 @@ class AsyncMLService:
             self._publish(ch, reply_to_queue, correlation_id, response_data)
             ch.basic_ack(delivery_tag=method.delivery_tag)
             self.messages_processed += 1
+            self._publish_health(True, note="processing messages")
         except Exception as err:
             self.messages_failed += 1
             error_response = {
@@ -180,6 +213,10 @@ class AsyncMLService:
             except Exception:
                 logger.exception("Failed to publish ML error response")
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+            self._publish_health(
+                bool(self.rabbit_connection and self.rabbit_connection.is_open),
+                note="message processing failed",
+            )
 
     def _stop_consuming_threadsafe(self) -> None:
         if not self.rabbit_connection or not self.rabbit_connection.is_open:
@@ -203,6 +240,8 @@ class AsyncMLService:
                 self.rabbit_connection.close()
             except Exception:
                 logger.exception("Failed to close RabbitMQ connection cleanly")
+        self.rabbit_channel = None
+        self.rabbit_connection = None
 
     def _publish(
         self,
@@ -238,8 +277,42 @@ class AsyncMLService:
             "messages_received": self.messages_received,
             "messages_processed": self.messages_processed,
             "messages_failed": self.messages_failed,
+            "consumer_thread_alive": bool(
+                self.rabbit_consumer_thread and self.rabbit_consumer_thread.is_alive()
+            ),
+            "last_consumer_error": self.last_consumer_error,
+            "last_consumer_error_at": self.last_consumer_error_at,
         }
         return health
+
+    def _record_consumer_error(self, error_message: str) -> None:
+        with self._state_lock:
+            self.last_consumer_error = error_message
+            self.last_consumer_error_at = datetime.datetime.now().isoformat()
+        self._publish_health(False, note=error_message)
+
+    def _clear_consumer_error(self) -> None:
+        with self._state_lock:
+            self.last_consumer_error = None
+            self.last_consumer_error_at = None
+
+    def _publish_health(self, rabbitmq_connected: bool, note: str) -> None:
+        runtime_status.update_rabbitmq(
+            healthy=rabbitmq_connected and self.is_running.is_set(),
+            details={
+                "rabbitmq_connected": rabbitmq_connected,
+                "service_type": "rabbitmq_worker",
+                "consumer_thread_alive": bool(
+                    self.rabbit_consumer_thread and self.rabbit_consumer_thread.is_alive()
+                ),
+                "messages_received": self.messages_received,
+                "messages_processed": self.messages_processed,
+                "messages_failed": self.messages_failed,
+                "last_consumer_error": self.last_consumer_error,
+                "last_consumer_error_at": self.last_consumer_error_at,
+                "note": note,
+            },
+        )
 
 
 def main() -> None:
