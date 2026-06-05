@@ -14,12 +14,14 @@ import shap
 
 
 DEFAULT_MODEL_DIR = os.getenv("MODEL_DIR", ".")
+DEFAULT_FALLBACK_DIR: str | None = os.getenv("FALLBACK_MODEL_DIR")
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class PredictionService:
     model_dir: str = DEFAULT_MODEL_DIR
+    fallback_dir: str | None = DEFAULT_FALLBACK_DIR
 
     def __post_init__(self) -> None:
         self._lock = threading.RLock()
@@ -31,11 +33,27 @@ class PredictionService:
         try:
             self.reload()
         except FileNotFoundError:
-            self.last_reload_error = f"Model files not found at {self.model_dir}"
-            logger.warning(
-                "Model files not found at %s — service unhealthy until /reload is called",
-                self.model_dir,
-            )
+            if self.fallback_dir and self.fallback_dir != self.model_dir:
+                logger.warning(
+                    "Model files not found at %s — trying bundled fallback at %s",
+                    self.model_dir,
+                    self.fallback_dir,
+                )
+                try:
+                    self._load_from_dir(self.fallback_dir)
+                    logger.info("Loaded bundled fallback model from %s", self.fallback_dir)
+                except Exception as err:
+                    self.last_reload_error = str(err)
+                    logger.exception(
+                        "Bundled fallback model load also failed from %s — service unhealthy until /reload is called",
+                        self.fallback_dir,
+                    )
+            else:
+                self.last_reload_error = f"Model files not found at {self.model_dir}"
+                logger.warning(
+                    "Model files not found at %s — service unhealthy until /reload is called",
+                    self.model_dir,
+                )
         except Exception as err:
             self.last_reload_error = str(err)
             logger.exception(
@@ -43,9 +61,9 @@ class PredictionService:
                 self.model_dir,
             )
 
-    def reload(self) -> None:
-        model_path = os.path.join(self.model_dir, "xg_model.pkl")
-        columns_path = os.path.join(self.model_dir, "x_columns.pkl")
+    def _load_from_dir(self, source_dir: str) -> None:
+        model_path = os.path.join(source_dir, "xg_model.pkl")
+        columns_path = os.path.join(source_dir, "x_columns.pkl")
         try:
             with open(model_path, "rb") as f:
                 model = pickle.load(f)
@@ -64,6 +82,9 @@ class PredictionService:
             self.explainer = explainer
             self.last_reload_at = datetime.datetime.now().isoformat()
             self.last_reload_error = None
+
+    def reload(self) -> None:
+        self._load_from_dir(self.model_dir)
 
     def health(self) -> dict[str, Any]:
         with self._lock:
