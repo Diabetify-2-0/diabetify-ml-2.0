@@ -30,6 +30,7 @@ class PredictionService:
         self.explainer: Any | None = None
         self.last_reload_at: str | None = None
         self.last_reload_error: str | None = None
+        self.active_model_id: int | None = None
         try:
             self.reload()
         except FileNotFoundError:
@@ -86,6 +87,10 @@ class PredictionService:
     def reload(self) -> None:
         self._load_from_dir(self.model_dir)
 
+    def set_model_id(self, model_id: int | None) -> None:
+        with self._lock:
+            self.active_model_id = model_id
+
     def health(self) -> dict[str, Any]:
         with self._lock:
             model_loaded = self.model is not None
@@ -137,11 +142,14 @@ class PredictionService:
 
         elapsed_time = time.perf_counter() - start_time
         positive_class_probability = prediction[1] if len(prediction) > 1 else prediction[0]
+        with self._lock:
+            model_id = self.active_model_id
         return {
             "prediction": self._safe_float_for_output(positive_class_probability),
             "explanation": explanation,
             "elapsed_time": self._safe_float_for_output(elapsed_time),
             "timestamp": datetime.datetime.now().isoformat(),
+            "model_id": model_id,
         }
 
     def _snapshot_ready_state(self) -> tuple[Any, Any, list[str]]:
