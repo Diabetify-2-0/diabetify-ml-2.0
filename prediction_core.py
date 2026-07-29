@@ -62,7 +62,7 @@ class PredictionService:
                 self.model_dir,
             )
 
-    def _load_from_dir(self, source_dir: str) -> None:
+    def _load_from_dir(self, source_dir: str, model_id: int | None = None) -> None:
         model_path = os.path.join(source_dir, "xg_model.pkl")
         columns_path = os.path.join(source_dir, "x_columns.pkl")
         try:
@@ -83,13 +83,11 @@ class PredictionService:
             self.explainer = explainer
             self.last_reload_at = datetime.datetime.now().isoformat()
             self.last_reload_error = None
+            if model_id is not None:
+                self.active_model_id = model_id
 
-    def reload(self) -> None:
-        self._load_from_dir(self.model_dir)
-
-    def set_model_id(self, model_id: int | None) -> None:
-        with self._lock:
-            self.active_model_id = model_id
+    def reload(self, model_id: int | None = None) -> None:
+        self._load_from_dir(self.model_dir, model_id=model_id)
 
     def health(self) -> dict[str, Any]:
         with self._lock:
@@ -111,7 +109,7 @@ class PredictionService:
         }
 
     def predict(self, features: list[float]) -> dict[str, Any]:
-        model, explainer, x_columns = self._snapshot_ready_state()
+        model, explainer, x_columns, model_id = self._snapshot_ready_state()
         converted_features = self._validate_features(features, x_columns)
 
         start_time = time.perf_counter()
@@ -142,8 +140,6 @@ class PredictionService:
 
         elapsed_time = time.perf_counter() - start_time
         positive_class_probability = prediction[1] if len(prediction) > 1 else prediction[0]
-        with self._lock:
-            model_id = self.active_model_id
         return {
             "prediction": self._safe_float_for_output(positive_class_probability),
             "explanation": explanation,
@@ -152,11 +148,11 @@ class PredictionService:
             "model_id": model_id,
         }
 
-    def _snapshot_ready_state(self) -> tuple[Any, Any, list[str]]:
+    def _snapshot_ready_state(self) -> tuple[Any, Any, list[str], int | None]:
         with self._lock:
             if self.model is None or self.explainer is None or not self.x_columns:
                 raise RuntimeError("Model is not loaded")
-            return self.model, self.explainer, list(self.x_columns)
+            return self.model, self.explainer, list(self.x_columns), self.active_model_id
 
     def _validate_features(self, features: list[float], x_columns: list[str]) -> list[float]:
         expected = len(x_columns)

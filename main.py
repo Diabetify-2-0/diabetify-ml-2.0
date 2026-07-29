@@ -75,8 +75,7 @@ def reload_model(
         if _MLOPS_URL and body.model_id is not None:
             logger.info("Downloading model %d artifacts from MLOps at %s", body.model_id, _MLOPS_URL)
             _download_model_from_mlops(body.model_id)
-        prediction_service.reload()
-        prediction_service.set_model_id(body.model_id)
+        prediction_service.reload(model_id=body.model_id)
         logger.info("Model reloaded successfully from %s", prediction_service.model_dir)
         return {"status": "ok", "message": "Model reloaded"}
     except Exception as err:
